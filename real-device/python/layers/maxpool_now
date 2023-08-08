@@ -1,0 +1,171 @@
+class MaxpoolBuffer {
+public:
+    MaxpoolBuffer() {}
+    MaxpoolBuffer(IdT FunId_, IdT TenIdin_trans_, IdT TenIdout_trans_) : FunId(FunId_), TenIdin_trans(TenIdin_trans_), TenIdout_trans(TenIdout_trans_)  { }
+
+    ~MaxpoolBuffer() = default;
+
+	IdT get_TenIdin_trans(){
+		return TenIdin_trans;
+	}
+
+	IdT get_TenIdout_trans(){
+		return TenIdout_trans;
+	}
+    //if NCHW->WHCN N=CN M=HW
+    void transpose(const DtypeForCpuOp *src, DtypeForCpuOp *dst, const size_t N, const size_t M) {
+    #pragma omp parallel for
+       for(size_t n = 0; n<N*M; n++) {
+          size_t i = n/N;
+          size_t j = n%N;
+          dst[n] = src[M*j + i]; 
+       }   
+    }
+
+    inline void transpose4x4_SSE(const float *A, float *B, const uint32_t lda, const uint32_t ldb) {
+        __m128 row1 = _mm_load_ps(&A[0*lda]);
+        __m128 row2 = _mm_load_ps(&A[1*lda]);
+        __m128 row3 = _mm_load_ps(&A[2*lda]);
+        __m128 row4 = _mm_load_ps(&A[3*lda]);
+         _MM_TRANSPOSE4_PS(row1, row2, row3, row4);
+         _mm_store_ps(&B[0*ldb], row1);
+         _mm_store_ps(&B[1*ldb], row2);
+         _mm_store_ps(&B[2*ldb], row3);
+         _mm_store_ps(&B[3*ldb], row4);
+    }
+
+    inline void transpose_block_SSE4x4(const float *A, float *B, const uint32_t lda, const uint32_t ldb ,const int block_size) {
+        #pragma omp parallel for
+        for(uint32_t i=0; i<ldb; i+=block_size) {
+            for(uint32_t j=0; j<lda; j+=block_size) {
+                uint32_t max_i2 = i+block_size < ldb ? i + block_size : ldb;
+                uint32_t max_j2 = j+block_size < lda ? j + block_size : lda;
+                for(uint32_t i2=i; i2<max_i2; i2+=4) {
+                    for(uint32_t j2=j; j2<max_j2; j2+=4) {
+                        transpose4x4_SSE(&A[i2*lda +j2], &B[j2*ldb + i2], lda, ldb);
+                    }
+                }
+            }
+         }
+    }
+    
+    inline void MaxpoolAVX(const uint32_t num_img, float* input, float* output){
+        #pragma omp parallel for        
+        for(size_t i=0; i<num_img; i+=8){
+            const __m256 inp8f = _mm256_load_ps(&input[i]);
+            const __m256 out8f = _mm256_load_ps(&output[i]);
+            const __m256 if_lq = _mm256_cmp_ps(out8f, inp8f, 0x01);
+            const __m256 res8f = _mm256_blendv_ps(out8f, inp8f, if_lq);
+            _mm256_stream_ps(&output[i], res8f);
+        }
+    }
+
+    inline void MaxpoolbackAVX(const uint32_t num_img, float* input, float* output, float* dinput, float* doutput){
+        #pragma omp parallel for
+        for(size_t i=0; i<num_img; i+=8){
+            const __m256 inp8f = _mm256_load_ps(&input[i]);
+            const __m256 out8f = _mm256_load_ps(&output[i]);
+            const __m256 din8f = _mm256_load_ps(&dinput[i]);
+            const __m256 dout8f = _mm256_load_ps(&doutput[i]);
+            const __m256 if_eq = _mm256_cmp_ps(out8f, inp8f, 0x00);
+            const __m256 sum8f = _mm256_add_ps(din8f, dout8f);
+            const __m256 res8f = _mm256_blendv_ps(din8f, sum8f, if_eq); // define dinput
+            const __m256 res28f = _mm256_blendv_ps(dout8f, zero8f, if_eq); // redefine doutput
+            _mm256_store_ps(&dinput[i], res8f);
+            _mm256_stream_ps(&doutput[i], res28f);
+        }
+    }
+
+    void forward(
+           shared_ptr<SecretTen> ten_in, shared_ptr<SecretTen> ten_out,
+           shared_ptr<SecretTen> ten_in_trans, shared_ptr<SecretTen> ten_out_trans,
+           uint32_t batch, uint32_t channel,uint32_t input_height, uint32_t input_width,
+           uint32_t output_height, uint32_t output_width, uint32_t filter_height,
+           uint32_t filter_width, uint32_t row_stride, uint32_t col_stride) {
+
+        const uint32_t inputhw = input_height*input_width;
+        const uint32_t num_img_in_storechunk = STORE_CHUNK_ELEM/inputhw;
+
+		if(STORE_CHUNK_ELEM % inputhw != 0){
+			printf("STORE_CHUNK_ELEM %% inputhw != 0\n");
+			return;
+		}
+		//if (num_img_in_storechunk % 8 != 0){
+		//	printf("STORE_CHUNK_ELEM/inputhw is not divisible by 8!\n");
+		//	return;
+		//}
+
+        const uint32_t outputhw = output_height * output_width;
+        uint32_t outputsize_in_storechunk = num_img_in_storechunk * outputhw;
+        const uint32_t total_size = batch * channel * inputhw;
+        size_t idx_out=0;
+        size_t idx_tmp=0;
+		size_t size_of_store_chunk = STORE_CHUNK_ELEM * sizeof(float);      
+        bool if_use_SSE_out =(outputhw%4==0);
+
+        float* chunk_in, *chunk_out, *chunk_in_trans, *chunk_out_trans, *chunk_tmp;
+		auto& chunk_manager = TrustedChunkManager::getInstance();
+
+        ChunkGuard<DtypeForCpuOp> guard_in(StoreChunkPool::GetChunkPool(), chunk_in);
+        ChunkGuard<DtypeForCpuOp> guard_out(StoreChunkPool::GetChunkPool(), chunk_out);
+        ChunkGuard<DtypeForCpuOp> guard_int(StoreChunkPool::GetChunkPool(), chunk_in_trans);
+        ChunkGuard<DtypeForCpuOp> guard_outt(StoreChunkPool::GetChunkPool(), chunk_out_trans);
+        ChunkGuard<DtypeForCpuOp> guard_tmp(StoreChunkPool::GetChunkPool(), chunk_tmp); // chunk_tmp is used to store output temporarily
+
+        auto chunk_op = [&](size_t start_chunk, size_t num_elem_in, size_t num_elem_out) {
+            printf("maxpooling forward in enclave. start_chunk: %d, num_elem_in %d, num_elem_out %d\n", start_chunk, num_elem_in, num_elem_out);
+            chunk_manager.GetChunk(ten_in->GetChunkId(start_chunk), chunk_in, num_elem_in * sizeof(DtypeForCpuOp));
+            transpose_block_SSE4x4(chunk_in, chunk_in_trans, inputhw, num_img_in_storechunk, 8);
+            chunk_manager.StoreChunk(ten_in_trans->GetChunkId(start_chunk), chunk_in_trans, size_of_store_chunk);
+			fill(chunk_out_trans, chunk_out_trans + outputsize_in_storechunk, std::numeric_limits<DtypeForCpuOp>::lowest());
+            for(uint32_t h = 0; h < input_height; ++h) {
+                for(uint32_t w = 0; w < input_width; ++w) {
+                    // (h_start, h_end) * (w_start, w_end) is the range that the input
+                    // vector projects to.
+                    const uint32_t h_start = (h < filter_height)
+                                            ? 0
+                                            : (h - filter_height) / row_stride + 1;
+                    const uint32_t h_end = std::min(h / row_stride + 1, output_height);
+                    const uint32_t w_start = (w < filter_width)
+                                            ? 0
+                                            : (w - filter_width) / col_stride + 1;
+                    const uint32_t w_end = std::min(w / col_stride + 1, output_width);
+                    // compute elementwise max
+                    const uint32_t in_offset = (h * input_width + w)*num_img_in_storechunk;
+                    for (uint32_t ph = h_start; ph < h_end; ++ph) {
+                        const uint32_t out_offset_base = ph * output_width;
+                        for (uint32_t pw = w_start; pw < w_end; ++pw) {
+                            const uint32_t out_offset = (out_offset_base + pw) * num_img_in_storechunk;
+                            MaxpoolAVX(num_img_in_storechunk, chunk_in_trans+in_offset, chunk_out_trans + out_offset);
+                        }
+                    }
+                }
+            }
+            chunk_manager.StoreChunk(ten_out_trans->GetChunkId(start_chunk), chunk_out_trans, size_of_store_chunk);
+            //transpose
+            if(if_use_SSE_out){
+                transpose_block_SSE4x4(chunk_out_trans, chunk_tmp, num_img_in_storechunk, outputhw, 8);
+            }
+            else{
+                transpose(chunk_out_trans, chunk_tmp, outputhw, num_img_in_storechunk);
+            }
+            if(idx_tmp+num_elem_out<STORE_CHUNK_ELEM){
+                copy(chunk_tmp, chunk_tmp+num_elem_out, chunk_out + idx_tmp);
+                idx_tmp+=num_elem_out;
+            }
+            else{
+                size_t idx_add = STORE_CHUNK_ELEM-idx_tmp;
+                copy(chunk_tmp,chunk_tmp+idx_add,chunk_out+idx_tmp);
+                chunk_manager.StoreChunk(ten_out->GetChunkId(idx_out), chunk_out, size_of_store_chunk);
+                idx_out += STORE_CHUNK_ELEM;
+                copy(chunk_tmp + idx_add,chunk_tmp + num_elem_out,chunk_out + idx_tmp+idx_add);
+                idx_tmp += num_elem_out;
+				idx_tmp -= STORE_CHUNK_ELEM; 
+            }
+        };//end of chunk_op
+        run_all_chunks_for_maxpool(chunk_op, STORE_CHUNK_ELEM, batch * channel * inputhw, outputsize_in_storechunk, inputhw, outputhw);      
+
+        if (idx_tmp!=0) {
+            chunk_manager.StoreChunk(ten_out->GetChunkId(idx_out), chunk_out, idx_tmp * sizeof(DtypeForCpuOp)); 
+        }
+	}//end maxpooling

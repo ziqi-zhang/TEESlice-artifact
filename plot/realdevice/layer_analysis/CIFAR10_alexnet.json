@@ -1,0 +1,20 @@
+{
+    "end2end_time": 34.12,
+    "end2end_throughput": 29.31,
+    "TimePerSample": 22.48907708333333,
+    "Throughput": 44.466031055631916,
+    "EnclaveConvTotalTime": 6142.41,
+    "EnclaveConvTotalTimePercent": 71.13,
+    "GPUConvTotalTime": 830.83,
+    "GPUConvTotalTimePercent": 9.62,
+    "TwoReLUTotalTime": 830.83,
+    "TwoReLUTotalTimePercent": 71.13,
+    "EnclaveConvForward": 3984.7,
+    "EnclaveConvForwardPercent": 46.14,
+    "GPUConvForward": 829.46,
+    "GPUConvForwardPercent": 9.6,
+    "DataTransfer": 2443.67,
+    "DataTransferPercent": 28.3,
+    "NonLinearForward": 1361.75,
+    "NonLinearForwardPercent": 15.77
+}
