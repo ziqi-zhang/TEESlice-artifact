@@ -1,16 +1,3 @@
-# To Lucien
-
-For your information, I summarize the main changes as follows. I think you do not need these changes nor develop based on them. 
-- In ```python/layers/sgx_conv_base.py``` I implemented the interface to invoke conv operation inside SGX.
-- In ```python/layers/sgx_linear_base.py``` I implemented the linear operation interface.
-- In ```SGXDNN/sgxdnn_main.cpp```, the conv class and linear class are ```SGXConvBuffer``` and ```SGXLinearBuffer```.
-
-Currently the main layer-wise test script I use is ```python/simple_module.py```. There are several functions for BN, maxpool, and conv layers. You can direcly run the script with
-```
-python -m python.simple_module
-```
-I think you can reuse my test script, or use a new version of test script as you like.
-
 # Goten
 **GPU-Outsourcing Trusted Execution of Neural Network Training**
 
