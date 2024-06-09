@@ -150,7 +150,7 @@ for dataset_idx, dataset_name in enumerate(["CIFAR100"]):
         axs[1,fig_idx].set_xticks(xticks)
         axs[1,fig_idx].set_xticklabels(xtick_labels)
         
-        if model_name in ["vgg16_bn", "vgg19_bn"]:
+        if model_name in ["vgg16_bn", "vgg19_bn", "resnet18", "resnet34"]:
             axs[0,fig_idx].set_yticks([0,25,50,75])
             axs[1,fig_idx].set_yticks([0,25,50,75])
 
