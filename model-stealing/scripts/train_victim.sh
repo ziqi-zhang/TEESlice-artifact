@@ -1,7 +1,7 @@
 export PYTHONPATH=../:$PYTHONPATH
 
-MODEL=resnet50
-for DATASET in CIFAR100 CIFAR10
+MODEL=resnet18
+for DATASET in CIFAR100
 do
 
 python knockoff/victim/train.py $DATASET $MODEL \
@@ -11,7 +11,7 @@ python knockoff/victim/train.py $DATASET $MODEL \
 --log-interval 25 \
 --pretrained imagenet_for_cifar \
 --lr 0.1 \
---lr-step 10 &
+--lr-step 10 
 
 
 
