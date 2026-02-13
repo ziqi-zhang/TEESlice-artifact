@@ -1,5 +1,8 @@
 # Artifact for the paper "No Privacy Left Outside: On the (In-)Security of TEE-Shielded DNN Partition for On-Device ML"
 
+## On-device Evaluation 
+If you want to use the on-device evaluation (SGX-based evaluation) part of this repo, please refer to our new repo [TAOISM: A TEE-based Confidential Heterogeneous Framework for DNN Models](https://github.com/ziqi-zhang/TAOISM). We cleaned some issues and present a better illustration of the code structure.
+
 ## Requirements
 To reproduce the results in the paper, you should have Python 3.7 with ``scipy`` and ``matplotlib`` installed
 
